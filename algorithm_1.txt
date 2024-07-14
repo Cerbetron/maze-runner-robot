@@ -1,0 +1,448 @@
+float current_pos;  //PID error
+  float set_pos=0;
+  float prev_error;
+  //float reset;
+  unsigned long int prev_time;
+  bool found_left, found_straight, found_right;
+  int lmotor = 3;
+  int lmotorn = 9;
+  int rmotor = 10;
+  int rmotorn = 11;
+  #define ir1  A0
+  #define ir2  A1
+  #define ir3  A2
+  #define ir4  A3
+  #define ir5  A4
+  #define ir6  A5
+  int bsl = 100; // analogWrite base speed for left motor
+  int bsr = 100; // analogWrite base speed for right motor 
+  int pins[6] = {ir1, ir2, ir3, ir4, ir5, ir6};
+  int dgir[6];
+  char dir;
+  int s1;
+  int s2;
+
+  int num = 0;
+  char path[100];
+  int path_length = 0;
+
+  int sw1 = 2;
+  int sw2 = 3;
+  int led = 12;
+  int chr = 1;
+  
+void setup() {
+    pinMode(3, OUTPUT);
+    pinMode(9, OUTPUT);
+    pinMode(10, OUTPUT);
+    pinMode(11, OUTPUT);
+
+    pinMode(sw1, INPUT);
+    pinMode(sw2, INPUT);
+    pinMode(led, OUTPUT);
+
+    Serial.begin(9600);
+}
+  
+void sensorsRead(){  //Read sensor Data
+  for(int i=0; i<6; i++){
+    dgir[i] = !(digitalRead(pins[i]));
+  } 
+}
+
+
+signed  int value_assign[6]={-2,-1,0,0,1,2};
+
+  //Find position of line
+  float getPosition(){
+    int high_sensors=0;
+    int sum_high=0;
+    for(int i=0;i<6;i++){
+      if (dgir[i]==1) high_sensors +=1;
+      sum_high += dgir[i]*value_assign[i];
+    }
+    if(high_sensors==0) return 0;   // if everything is zero, return 0 instead of NaN
+    
+    float Position=sum_high/high_sensors;
+    return Position;
+  }
+
+float getPID(float kp, float kd){
+  //Error is the difference between the postion of the bot and the position we want it to be
+  unsigned long current_time=millis();
+  double del_time=current_time-prev_time;
+
+  float set_pos = 0;
+
+  sensorsRead();
+
+  float current_pos = getPosition();
+
+  float error=set_pos-current_pos;                         //Steady state error
+  //reset += error*del_time;                                 //Reset-The small errors that get accumulated over time *reset gets added over time , hence global variable
+  float rate_error= error-prev_error/del_time;             //Rate of change of error
+
+  float pid=kp*(error) + kd*(rate_error);     //Calculate PID value
+
+  prev_error=error;
+  prev_time=current_time;
+  return pid;
+}
+
+void PidRun(float kp, float kd, const int base, const int max, bool states, const int count) { // state -> 1 : normal ? state -> 0 : reverse pid
+  for(int i=0; i<count; ++i) {
+    int pid = int( getPID( kp, kd) + 0.5 );
+
+    int pidA = 255 - (( (base + pid ) > max ) ? max : ( (base + pid) < 0 ? 0 : (base + pid) )) ;
+    int pidB = 255 - (( (base - pid ) > max ) ? max : ( (base - pid) < 0 ? 0 : (base - pid) ));
+
+    if(states) {  // Forward PID
+      // left motor
+      analogWrite( lmotor, pidA);
+      digitalWrite( lmotorn, HIGH);
+
+      // right motor
+      analogWrite( rmotor, pidB);
+      digitalWrite( rmotorn, HIGH);
+    } else {  // Reverse PID
+      // left motor
+      analogWrite( lmotorn, pidB);
+      digitalWrite( lmotor, HIGH);
+
+      // right motor
+      analogWrite( rmotorn, pidA);
+      digitalWrite( rmotor, HIGH);
+    }
+    delay(1);
+  }
+}
+
+char select_turnL(bool found_left, bool found_straight, bool found_right)
+{
+  // Make a decision about how to turn. The following code
+  // Implements a left-hand-on-the-wall strategy, where we always preffer left turn
+  if (found_left)
+    return 'L';
+  else if (found_straight)
+    return 'S';
+  else if (found_right)
+    return 'R';
+  else
+    return 'B';
+}
+
+char select_turnR(char found_right, char found_straight, char found_left)
+{
+  // Make a decision about how to turn. The following code
+  // Implements a right-hand-on-the-wall strategy, Where we always preffer right turn
+  if (found_right)
+    return 'R';
+  else if (found_straight)
+    return 'S';
+  else if (found_left)
+    return 'L';
+  else
+    return 'B';
+}
+
+void motorRun(const int cased, const int speed) {
+  int spd = speed;
+  spd = 255 - spd;
+  switch(cased) {
+    case 0 : // forward
+      // left motor
+      analogWrite( lmotor, spd);
+      digitalWrite( lmotorn, HIGH);
+
+      // right motor
+      analogWrite( rmotor, spd);
+      digitalWrite( rmotorn, HIGH);
+      return;
+
+    case 1 :  // right
+      // left motor
+      analogWrite( lmotor, spd);
+      digitalWrite( lmotorn, HIGH);
+
+      // right motor
+      analogWrite( rmotorn, spd);
+      digitalWrite( rmotor, HIGH);
+      return;
+    
+    case 2 : // left 
+      // left motor
+      analogWrite( lmotorn, spd);
+      digitalWrite( lmotor, HIGH);
+
+      // right motor
+      analogWrite( rmotor, spd);
+      digitalWrite( rmotorn, HIGH);
+      return;
+
+    case 3 :  // reverse
+      // left motor
+      analogWrite( lmotorn, spd);
+      digitalWrite( lmotor, HIGH);
+
+      // right motor
+      analogWrite( rmotorn, spd);
+      digitalWrite( rmotor, HIGH);
+      return;
+    
+    case 4 :  // Stop or Brake
+      // left motor
+      digitalWrite( lmotor, LOW);
+      digitalWrite( lmotorn, LOW);
+
+      // right motor
+      digitalWrite( rmotor, LOW);
+      digitalWrite( rmotorn, LOW);
+      return;
+  }
+}
+
+void turn(char dir)
+{
+  int base = 140, max = 140;
+  // According to dir perform a turn
+  switch (dir)
+  {
+    case 'L':
+      motorRun( 2, 240);
+      sensorsRead();
+      while (dgir[0])
+      {
+        sensorsRead();    //Move left until left extreme sensor goes out of the white line comes on black
+      }
+      motorRun( 2, 120);
+      sensorsRead();
+      while (!dgir[0])
+      {
+        sensorsRead();        // Again move left until it get's on white line
+      }
+      PidRun(1,10,base,max,1,30);    // Fast pid after turn to align bot quickly on line
+      motorRun( 4, 0);
+      break;
+    case 'R':
+      motorRun( 1, 240);
+      sensorsRead();
+      while (dgir[5])
+      {
+        sensorsRead();   //Move right until left extreme sensor goes out of the white line comes on black
+      }
+      motorRun( 1, 120);
+      sensorsRead();
+      while (!dgir[5])
+      {
+        sensorsRead();         // Again move right until it get's on white line
+      }
+      PidRun(1,10,base,max,1,30);      // Fast pid after turn to align a bot quickly on line
+      motorRun( 4, 0);
+      break;
+    case 'B':
+      motorRun( 1, 240);
+      sensorsRead();
+      while (dgir[5])
+      {
+        sensorsRead();          // Take u turn using right turn
+      }
+      motorRun( 1, 120);
+      sensorsRead();
+      while (!dgir[5])
+      {
+        sensorsRead();
+      }
+      PidRun(1,10,base,max,1,10);
+      motorRun( 4, 0);
+      delay(50);
+      PidRun(1,50,90,90,0,70);    // Back moving pid
+      motorRun(0,40);
+      delay(40);
+      break;
+  }
+}
+
+
+void simplify_path()
+{
+  // Path simplification. The strategy is that whenever we encounter a
+  // sequence xBx, we can simplify it by cutting out the dead end.
+
+  if (path_length < 3 || path[path_length - 2] != 'B')      // simplify the path only if the second-to-last turn was a 'B'
+    return;
+  int total_angle = 0;
+  int m;
+  // Get the angle as a number between 0 and 360 degrees.
+  for (m = 1; m <= 3; m++)
+  {
+    switch (path[path_length - m])
+    {
+      case 'R':
+        total_angle += 90;
+        break;
+      case 'L':
+        total_angle += 270;
+        break;
+      case 'B':
+        total_angle += 180;
+        break;
+    }
+  }
+  // Replace all of those turns with a single one.
+  total_angle = total_angle % 360;
+  switch (total_angle)
+  {
+    case 0:
+      path[path_length - 3] = 'S';
+      break;
+    case 90:
+      path[path_length - 3] = 'R';
+      break;
+    case 180:
+      path[path_length - 3] = 'B';
+      break;
+    case 270:
+      path[path_length - 3] = 'L';
+      break;
+  }
+  path_length -= 2;
+}
+
+
+void MainPid(const float kp,const float kd,int base,int max ) {
+  while(1) {
+    int pid = int( getPID(kp, kd) + 0.5);
+
+    int rsp = 255 - (( (base - pid) > max ) ? max : ( ( (base - pid) < 0 ) ? 0 : (base - pid) )) ;
+    int lsp = 255 - (( (base + pid) > max ) ? max : ( ( (base + pid) < 0 ) ? 0 : (base + pid) )) ;
+
+    analogWrite(lmotor, lsp);
+    digitalWrite(lmotorn, HIGH);
+
+    analogWrite(rmotor, rsp);
+    digitalWrite(rmotorn, HIGH);
+
+    if((dgir[0] == 1 || dgir[5] == 1)){
+      Serial.println("found an intersection");
+      return;    //found an intersection
+    }
+    else if(dgir[1]==0 && dgir[2] == 0 && dgir[3] == 0 && dgir[4] == 0){
+      return; // no line / must be a dead end
+    }
+    delay(5);
+  }
+}
+
+void maze() {
+  while(1){
+    MainPid(0.5, 0.7, 140, 140);
+    digitalWrite(led, HIGH);
+
+    motorRun(4,0);
+    motorRun(0,30);
+    delay(30);
+    motorRun(4,0);
+
+    bool fndL = 0;
+    bool fndS = 0;
+    bool fndR = 0;
+
+        // Now read the sensors and check the intersection type.
+    sensorsRead();
+    if (dgir[0] == 1)
+    {
+      fndL = 1;
+      if (dgir[5] == 1)
+      {
+        fndR = 1;
+      }
+    }
+
+    motorRun(0,60);
+    //
+    
+    
+    
+    
+    delay(200);
+    motorRun(4,0);
+    sensorsRead();
+    if (dgir[1]==1 || dgir[2] == 1 || dgir[3] == 1 || dgir[4] == 1){
+      fndS = 1;
+    }
+    if(dgir[1]==1 && dgir[2] == 1 && dgir[3] == 1 && dgir[4] == 1){
+      break;
+    }
+
+    if (chr == 1)
+      dir = select_turnL(fndL, fndS, fndR);
+    else if (chr == 2)
+      dir = select_turnR(fndR, fndS, fndL);
+    
+    turn(dir);
+
+    path[path_length] = dir;
+    path_length++;
+
+    simplify_path();
+  }
+
+  motorRun(4,0);
+  motorRun(0,80);
+  delay(400);
+  motorRun(4,0);
+
+  digitalWrite(led, HIGH);
+  delay(4000);
+  digitalWrite(led, LOW);
+
+  s2 = digitalRead(sw2);
+  while (s2 == HIGH)
+    s2 = digitalRead(sw2);     // Wait for pressing a switch
+
+  delay(800);
+  motorRun(0,60);
+  delay(40);
+  motorRun(0,80);
+  delay(40);
+  motorRun(0,100);
+  delay(40);
+
+  while (1)
+  {
+    int k;
+    for (k = 0; k < path_length; k++)
+    {
+      MainPid(0.5,0.7,140,140);
+      motorRun(0,50);    // After reaching a intercetion follow the shortest path turn
+      delay(50);
+      motorRun(0,60);
+      delay(200);
+      motorRun(4,0);
+      delay(5);
+      turn(path[k]);
+    }
+    MainPid(0.5,0.7,140,140);
+    motorRun(4,0);
+    motorRun(0,80);
+    delay(400);
+    motorRun(4,0);
+    digitalWrite(led, HIGH);
+    delay(4000);
+    digitalWrite(led, LOW);
+  }
+    // Go back to a starting of the main loop
+}
+
+void loop() {
+  delay(3000);
+  MainPid(0.1,0.05,100,200);
+  // delay(3000);
+  // motorRun(0, 60);
+  // delay(40);
+  // motorRun(0, 80);
+  // delay(40);                              // For graduly increasing speed so that bot dose not get direct high speed at the start
+  // motorRun(0, 100);
+  // delay(40);
+  // maze();
+}
